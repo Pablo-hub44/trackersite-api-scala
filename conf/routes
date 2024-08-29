@@ -1,0 +1,26 @@
+# Routes
+# This file defines all application routes (Higher priority routes first)
+# ~~~~
+
+#Swagger
+GET      /api-docs/swagger.json                                     controllers.api.swagger.ApiSwaggerController.swaggerSpec()
+GET      /                                                          controllers.api.swagger.ApiSwaggerController.swaggerUi
+
+# Status Route
+GET     /public/status                                              controllers.api.status.StatusControllerImpl.status
+
+# User Routes
+POST    /oauth/signup                                               controllers.api.user.UserControllerImpl.signUpUser
+POST    /oauth/signin                                               controllers.api.user.UserControllerImpl.signInUser()
+GET     /private/user/data                                          controllers.api.user.UserControllerImpl.getUserData
+## Applications Routes
+GET     /private/applications                                       controllers.api.applications.ApplicationControllerImpl.getApplicationsByUsrKey(page: Int, pageSize: Int)
+POST    /private/applications/application                           controllers.api.applications.ApplicationControllerImpl.addNewApplication()
+GET     /private/applications/application/:appKey                   controllers.api.applications.ApplicationControllerImpl.getApplicationByKey(appKey)
+PUT     /private/applications/application/:appKey                   controllers.api.applications.ApplicationControllerImpl.logicDeleteApplication(appKey)
+GET     /private/applications/search/:nameApp                       controllers.api.applications.ApplicationControllerImpl.getApplicationsByWordFilter(nameApp)
+#
+## Recordings Routes
+GET     /private/recordings/application/:appKey                     controllers.api.recordings.RecordingControllerImpl.getRecordingsByAppKey(appKey, page: Int, pageSize: Int, startDate: Option[String], endDate: Option[String])
+GET     /private/recordings/recording/:recordKey                    controllers.api.recordings.RecordingControllerImpl.getRecordingByKey(recordKey)
+POST    /recordings/recording                               controllers.api.recordings.RecordingControllerImpl.addNewRecordingIntoApp()

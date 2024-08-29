@@ -1,0 +1,262 @@
+default:
+  tags:
+    - docker
+
+variables:
+  DOCKER_REGISTRY: 417954770034.dkr.ecr.us-west-2.amazonaws.com
+  AWS_DEFAULT_REGION: us-west-2
+  IMAGE_NAME: "trackersite/trackersite-api"
+  CONTAINER_NAME: "trackersite-api"
+  HOST_USER: "root"
+  SBT_OPTS: "-Dsbt.global.base=sbt-cache/sbtboot -Dsbt.boot.directory=sbt-cache/boot -Dsbt.ivy.home=sbt-cache/ivy"
+  COURSIER_TTL: 0s
+
+stages:
+  - ci
+  - docker_configure
+  - docker
+  - deploy_configure
+  - deploy
+
+test:
+  stage: ci
+  resource_group: $CI_COMMIT_REF_NAME/$CI_JOB_NAME
+  image:
+    name: docker.io/sbtscala/scala-sbt:eclipse-temurin-jammy-21.0.1_12_1.9.7_3.3.1
+    pull_policy: if-not-present
+  cache:
+    untracked: true
+    key: sbt
+    paths:
+      - "sbt-cache/ivy/cache"
+      - "sbt-cache/boot"
+      - "sbt-cache/sbtboot"
+  artifacts:
+    reports:
+      junit: target/test-reports/TEST-*.xml
+  script:
+    - export COURSIER_TTL=0s; sbt clean "scalafixAll --check" coverage test coverageReport coverageAggregate
+
+sonarqube-check:
+  stage: ci
+  resource_group: $CI_COMMIT_REF_NAME/$CI_JOB_NAME
+  image:
+    name: sonarsource/sonar-scanner-cli:latest
+    entrypoint: [ "" ]
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+    GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script:
+    - sonar-scanner
+  allow_failure: true
+  only:
+    - main
+
+build:
+  stage: ci
+  resource_group: $CI_COMMIT_REF_NAME/$CI_JOB_NAME
+  image:
+    name: docker.io/sbtscala/scala-sbt:eclipse-temurin-jammy-21.0.1_12_1.9.7_3.3.1
+    pull_policy: if-not-present
+  cache:
+    untracked: true
+    key: sbt
+    paths:
+      - "sbt-cache/ivy/cache"
+      - "sbt-cache/boot"
+      - "sbt-cache/sbtboot"
+  artifacts:
+    paths:
+      - ./target
+  before_script:
+    - cp conf/logback-prod.xml conf/logback.xml
+  script:
+    - "export COURSIER_TTL=0s;sbt clean update docker:stage"
+
+docker_configure_sandbox:
+  stage: docker_configure
+  resource_group: $CI_COMMIT_REF_NAME/$CI_JOB_NAME
+  image:
+    name: alpine
+    pull_policy: if-not-present
+  only:
+    - sandbox
+  script:
+    - echo "IMAGE_NAME=$IMAGE_NAME:sandbox" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+
+docker_configure_production:
+  stage: docker_configure
+  resource_group: $CI_COMMIT_REF_NAME/$CI_JOB_NAME
+  image:
+    name: alpine
+    pull_policy: if-not-present
+  only:
+    - production
+  script:
+    - echo "IMAGE_NAME=$IMAGE_NAME:production" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+
+docker:
+  stage: docker
+  resource_group: $CI_COMMIT_REF_NAME/$CI_JOB_NAME
+  only:
+    - sandbox
+    - production
+  image:
+    name: docker:20.10.16
+    pull_policy: if-not-present
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+
+  before_script:
+    - apk add --no-cache curl jq python3 py3-pip
+    - pip install awscli
+    - aws ecr get-login-password | docker login --username AWS --password-stdin $DOCKER_REGISTRY
+  script:
+    - docker build -t $DOCKER_REGISTRY/$IMAGE_NAME target/docker/stage/.
+    - docker push $DOCKER_REGISTRY/$IMAGE_NAME
+
+deploy_configure_sandbox:
+  image:
+    name: alpine
+    pull_policy: if-not-present
+  stage: deploy_configure
+  resource_group: $CI_COMMIT_REF_NAME/$CI_JOB_NAME
+  only:
+    - sandbox
+  script:
+    #ENVS for CI
+    - echo "HOST=$HOST_SANDBOX" >> build.env
+    - echo "CONTAINER_NAME=$CONTAINER_NAME-sandbox" >> build.env
+    #ENVS for DOCKER
+    - echo "API_HOST=$API_HOST_SANDBOX" >> build-ci.env
+    - echo "UI_HOST=$UI_HOST_SANDBOX" >> build-ci.env
+
+    - echo "DB_NAME=$DB_NAME_SANDBOX" >> build-ci.env
+    - echo "DB_HOST=$DB_HOST_SANDBOX" >> build-ci.env
+    - echo "DB_PASSWORD=$DB_PASSWORD_SANDBOX" >> build-ci.env
+    - echo "DB_USER=$DB_USER_SANDBOX" >> build-ci.env
+    - echo "DB_NUM_THREADS=$DB_NUM_THREADS_SANDBOX" >> build-ci.env
+
+    - echo "OAUTH_JWKS_URL=$OAUTH_JWKS_URL_SANDBOX" >> build-ci.env
+    - echo "APPTACK_URL=$APPTACK_URL_SANDBOX" >> build-ci.env
+    - echo "APPTACK_APP_KEY=$APPTACK_APP_KEY_SANDBOX" >> build-ci.env
+    - echo "APPTACK_APP_SECRET_KEY=$APPTACK_APP_SECRET_KEY_SANDBOX" >> build-ci.env
+
+    - echo "DIGITALOCEAN_BUCKET_NAME=$DIGITALOCEAN_BUCKET_NAME_SANDBOX" >> build-ci.env
+    - echo "DIGITALOCEAN_SECRET_KEY=$DIGITALOCEAN_SECRET_KEY_SANDBOX" >> build-ci.env
+    - echo "DIGITALOCEAN_ACCESS_KEY=$DIGITALOCEAN_ACCESS_KEY_SANDBOX" >> build-ci.env
+
+    - echo "APP_ENVIRONMENT=sandbox" >> build-ci.env
+
+  artifacts:
+    reports:
+      dotenv: build.env
+    paths:
+      - build-ci.env
+deploy_configure_production:
+  image:
+    name: alpine
+    pull_policy: if-not-present
+  stage: deploy_configure
+  resource_group: $CI_COMMIT_REF_NAME/$CI_JOB_NAME
+  only:
+    - production
+  script:
+    #ENVS for CI
+    #ENVS for CI
+    - echo "HOST=$HOST_PROD" >> build.env
+    - echo "CONTAINER_NAME=$CONTAINER_NAME-sandbox" >> build.env
+    #ENVS for DOCKER
+    - echo "API_HOST=$API_HOST_PROD" >> build-ci.env
+    - echo "UI_HOST=$UI_HOST_PROD" >> build-ci.env
+
+    - echo "DB_NAME=$DB_NAME_PROD" >> build-ci.env
+    - echo "DB_HOST=$DB_HOST_PROD" >> build-ci.env
+    - echo "DB_PASSWORD=$DB_PASSWORD_PROD" >> build-ci.env
+    - echo "DB_USER=$DB_USER_PROD" >> build-ci.env
+    - echo "DB_NUM_THREADS=$DB_NUM_THREADS_PROD" >> build-ci.env
+
+    - echo "OAUTH_JWKS_URL=$OAUTH_JWKS_URL_PROD" >> build-ci.env
+    - echo "APPTACK_URL=$APPTACK_URL_PROD" >> build-ci.env
+    - echo "APPTACK_APP_KEY=$APPTACK_APP_KEY_PROD" >> build-ci.env
+    - echo "APPTACK_APP_SECRET_KEY=$APPTACK_APP_SECRET_KEY_PROD" >> build-ci.env
+
+    - echo "DIGITALOCEAN_BUCKET_NAME=$DIGITALOCEAN_BUCKET_NAME_PROD" >> build-ci.env
+
+    - echo "APP_ENVIRONMENT=production" >> build-ci.env
+
+  artifacts:
+    reports:
+      dotenv: build.env
+    paths:
+      - build-ci.env
+
+deploy-sandbox:
+  resource_group: $CI_COMMIT_REF_NAME/$CI_JOB_NAME
+  image:
+    name: alpine
+    pull_policy: if-not-present
+  stage: deploy
+  dependencies:
+    - docker_configure_sandbox
+    - deploy_configure_sandbox
+  only:
+    - sandbox
+  before_script:
+    - apk add openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY_SANDBOX" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+  script:
+    - scp -o StrictHostKeyChecking=no build-ci.env $HOST_USER@$HOST:.
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID && export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY && export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION && aws ecr get-login-password --region $AWS_DEFAULT_REGION | sudo docker login --username AWS --password-stdin ${DOCKER_REGISTRY}"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker pull $DOCKER_REGISTRY/$IMAGE_NAME"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker container stop $CONTAINER_NAME || true"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker container wait $CONTAINER_NAME || true"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker container rm -f $CONTAINER_NAME || true"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker run -d -p 80:80 -v /logs:/logs --restart always --name $CONTAINER_NAME --env-file build-ci.env $DOCKER_REGISTRY/$IMAGE_NAME"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "chmod 777 -R /logs"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker system prune -f -a"
+
+deploy-production:
+  resource_group: $CI_COMMIT_REF_NAME/$CI_JOB_NAME
+  image:
+    name: alpine
+    pull_policy: if-not-present
+  stage: deploy
+  dependencies:
+    - docker_configure_production
+    - deploy_configure_production
+  only:
+    - production
+  before_script:
+    - apk add openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY_PROD" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+  script:
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip"
+    - scp -o StrictHostKeyChecking=no build-ci.env $HOST_USER@$HOST:.
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID && export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY && export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION && aws ecr get-login-password --region $AWS_DEFAULT_REGION | sudo docker login --username AWS --password-stdin ${DOCKER_REGISTRY}"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker pull $DOCKER_REGISTRY/$IMAGE_NAME"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker container stop $CONTAINER_NAME || true"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker container wait $CONTAINER_NAME || true"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker container rm -f $CONTAINER_NAME || true"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker run -d -p 80:80 -v /logs:/logs --restart always --name $CONTAINER_NAME --env-file build-ci.env $DOCKER_REGISTRY/$IMAGE_NAME"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "chmod 777 -R /logs"
+    - ssh -o StrictHostKeyChecking=no $HOST_USER@$HOST "sudo docker system prune -f -a"
